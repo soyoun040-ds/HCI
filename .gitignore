@@ -5,3 +5,6 @@ out/
 
 __pycache__/
 *.pyc
+
+# 로컬 테스트 스크립트
+crolling.py
