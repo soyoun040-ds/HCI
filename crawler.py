@@ -41,8 +41,11 @@ import requests
 from bs4 import BeautifulSoup
 
 CUTOFF = datetime(2026, 7, 31, 23, 59, 59)   # 이 날짜 이후 글은 전부 버림
-MAX_POSTS_SCAN = 200                          # 블로그당 훑을 최근 글 수 (컷오프 이전)
-TOP_N = 50                                    # 그중 좋아요+댓글 상위 N개 본문 수집
+MAX_POSTS_SCAN = 200                          # '최근' 표본을 뽑을 범위 (컷오프 이전 최근 N개)
+TOP_N = 50                                    # 최근 표본: 그중 좋아요+댓글 상위 N개
+ALLTIME_TOP_N = 50                            # 전체기간 표본: 전 기간 좋아요+댓글 상위 N개
+RANDOM_PER_YEAR = 5                           # 무작위 표본: 연도당 N개
+RANDOM_N = 30                                 # 무작위 표본: 블로그당 최대 N개
 RECENT_N = 50                                 # 최근 N건 날짜 기록
 MAX_COMMENTS = 100                            # 글당 댓글 원문 최대 수 (컷오프 이전 댓글만)
 PAGE_SIZE = 30                                # post-list API 최대값 (50은 400 에러)
@@ -78,7 +81,17 @@ BLOG_COLS = [
     "blog_directory",                   # 네이버 블로그 주제 디렉터리
     "is_power_blog", "is_year_of_blog", "last_year_of_blog",
     "recent50_dates_json",              # 7/31 이전 최근 50건 날짜
-    "scanned_post_count",               # 반응 수를 본 글 수 (<= MAX_POSTS_SCAN)
+    "scanned_post_count",               # 반응 수를 본 글 수 (전체 스캔 시 = 컷오프 이전 전체 글 수)
+    # ── v2 (전체 스캔) 추가 컬럼 ──
+    "pre_cutoff_post_count",            # 7/31 이전 공개 글 수 (전수)
+    "sampled_post_count",               # 본문을 받은 글 수 (표본 3종 합집합)
+    "scan_mode",                        # full = 전체 훑기, recent200 = 구버전
+]
+
+POSTMETA_COLS = [                       # 전체 글 메타데이터 (본문 없음)
+    "blog_id", "log_no", "post_date", "post_datetime",
+    "like_count", "comment_count", "share_count",
+    "category_name", "buy_with_own_money", "sample_set",
 ]
 
 POST_COLS = [
@@ -95,6 +108,8 @@ POST_COLS = [
     "buy_with_own_money",       # 내돈내산 표시 여부
     "video_count", "link_count", "heading_count",
     "post_datetime",
+    # ── v2 추가 컬럼 ──
+    "sample_set",               # recent_top | alltime_top | random (겹치면 |로 연결)
 ]
 
 WIDGET_PATTERNS = [
@@ -243,8 +258,80 @@ def post_list_page(c, blog_id, page):
     return ((js or {}).get("result") or {}).get("items") or []
 
 
+def parse_item(it):
+    d = ts_to_dt(it.get("addDate"))
+    if not d or d > CUTOFF or it.get("notOpen") or it.get("postBlocked"):
+        return None
+    return {
+        "log_no": str(it["logNo"]), "blog_no": it.get("blogNo"),
+        "title": (it.get("titleWithInspectMessage") or "").strip(),
+        "post_dt": d,
+        "category_name": it.get("categoryName", ""),
+        "like_count": it.get("sympathyCnt") or 0,
+        "comment_count": it.get("commentCnt") or 0,
+        "share_count": it.get("shareCnt") or 0,
+        "buy_with_own_money": bool(it.get("buyWithMyOwnMoney")),
+    }
+
+
+def get_all_posts(c, blog_id):
+    """마지막 페이지까지 전부 훑는다. 목록 자체에 공감/댓글 수가 들어 있어 본문 없이도 랭킹 가능.
+
+    반환: (컷오프 이전 글 전체, 첫 글 날짜, 전체 공개 글 수)
+    """
+    posts, page, total, first = [], 1, 0, None
+    while True:
+        items = post_list_page(c, blog_id, page)
+        if not items:
+            break
+        total += len(items)
+        for it in items:
+            d = ts_to_dt(it.get("addDate"))
+            if d and (first is None or d < first):
+                first = d
+            p = parse_item(it)
+            if p:
+                posts.append(p)
+        page += 1
+        if page > 20000:                      # 안전장치
+            log.warning(f"{blog_id}: 페이지 20000 초과, 중단")
+            break
+    return posts, first, total
+
+
+def pick_samples(posts):
+    """표본 3종. posts 는 최신순(컷오프 이전 전체).
+
+    recent_top  : 최근 MAX_POSTS_SCAN개 중 좋아요+댓글 상위 TOP_N  → 요즘 잘 먹히는 글
+    alltime_top : 전 기간 좋아요+댓글 상위 ALLTIME_TOP_N            → 대표작/최고 수준
+    random      : 연도별 무작위 (연도당 RANDOM_PER_YEAR, 최대 RANDOM_N) → 평소 글의 평균
+    """
+    def rank(sub, n):
+        return sorted(sub, key=lambda p: (p["like_count"] + p["comment_count"],
+                                          p["post_dt"]), reverse=True)[:n]
+
+    tag = {}
+    for p in rank(posts[:MAX_POSTS_SCAN], TOP_N):
+        tag.setdefault(p["log_no"], []).append("recent_top")
+    for p in rank(posts, ALLTIME_TOP_N):
+        tag.setdefault(p["log_no"], []).append("alltime_top")
+
+    by_year = {}
+    for p in posts:
+        by_year.setdefault(p["post_dt"].year, []).append(p)
+    # 블로그마다 고정 시드 (파이썬 hash()는 실행마다 달라져서 log_no 를 그대로 쓴다)
+    rnd = random.Random(int(posts[0]["log_no"]) if posts else 0)
+    picked = []
+    for year in sorted(by_year, reverse=True):
+        picked += rnd.sample(by_year[year], min(RANDOM_PER_YEAR, len(by_year[year])))
+    for p in picked[:RANDOM_N]:
+        tag.setdefault(p["log_no"], []).append("random")
+
+    return {k: "|".join(v) for k, v in tag.items()}
+
+
 def get_recent_posts(c, blog_id, max_posts=MAX_POSTS_SCAN):
-    """컷오프 이전 최근 글 max_posts개. 목록 자체에 공감/댓글 수가 들어 있다."""
+    """[구버전] 컷오프 이전 최근 글 max_posts개만."""
     posts, page = [], 1
     while len(posts) < max_posts:
         items = post_list_page(c, blog_id, page)
@@ -360,18 +447,35 @@ def get_comments(c, blog_id, blog_no, log_no, limit=MAX_COMMENTS):
 
 
 # ── 5. 블로그 1개 ───────────────────────────────────────────
-def crawl_blog(c, blog_id, mate, collector):
+def crawl_blog(c, blog_id, mate, collector, have=frozenset()):
+    """have: 이미 본문을 받아둔 log_no 집합. 겹치면 본문을 다시 받지 않는다."""
     c.failures = 0
     info, cats = get_blog_meta(c, blog_id)
     if not info:
         raise RuntimeError("블로그 정보 없음 (비공개/삭제?)")
 
-    posts, next_page = get_recent_posts(c, blog_id)
-    first_dt, total = find_first_post(c, blog_id, known_nonempty=max(1, next_page - 1))
+    posts, first_dt, total = get_all_posts(c, blog_id)
+    sample = pick_samples(posts)                    # {log_no: "recent_top|random"}
 
-    top = sorted(posts, key=lambda p: p["like_count"] + p["comment_count"], reverse=True)[:TOP_N]
+    meta_rows = [{
+        "blog_id": blog_id, "log_no": p["log_no"],
+        "post_date": p["post_dt"].strftime("%Y-%m-%d"),
+        "post_datetime": p["post_dt"].strftime("%Y-%m-%d %H:%M"),
+        "like_count": p["like_count"], "comment_count": p["comment_count"],
+        "share_count": p["share_count"], "category_name": p["category_name"],
+        "buy_with_own_money": p["buy_with_own_money"],
+        "sample_set": sample.get(p["log_no"], ""),
+    } for p in posts]
+
+    reuse_rows = []                                 # 기존 파일에서 본문을 가져올 글
     rows = []
-    for p in top:
+    for p in posts:
+        sset = sample.get(p["log_no"])
+        if not sset:
+            continue
+        if p["log_no"] in have:                     # 이미 받아둔 본문 → 병합 단계에서 처리
+            reuse_rows.append({"blog_id": blog_id, "log_no": p["log_no"], "sample_set": sset})
+            continue
         body = get_post_body(c, blog_id, p["log_no"])
         comments = (get_comments(c, blog_id, p["blog_no"], p["log_no"])
                     if p["comment_count"] else [])
@@ -391,6 +495,7 @@ def crawl_blog(c, blog_id, mate, collector):
             "widget_mission_name": body["widget_mission_name"],
             "body_text": body["body_text"],
             "comments_json": json.dumps(comments, ensure_ascii=False),
+            "sample_set": sset,
         })
 
     mc = info.get("mateCitations") or {}
@@ -436,10 +541,13 @@ def crawl_blog(c, blog_id, mate, collector):
         "recent50_dates_json": json.dumps(
             [p["post_dt"].strftime("%Y-%m-%d %H:%M") for p in posts[:RECENT_N]]),
         "scanned_post_count": len(posts),
+        "pre_cutoff_post_count": len(posts),
+        "sampled_post_count": len(sample),
+        "scan_mode": "full",
     }
     if c.failures:
         raise RuntimeError(f"요청 {c.failures}건 최종 실패 → 저장 안 함 (재실행 시 다시 수집)")
-    return blog_row, rows
+    return blog_row, rows, meta_rows, reuse_rows
 
 
 # ── 6. 메인 ─────────────────────────────────────────────────
@@ -460,6 +568,43 @@ def done_ids(path):
         return {r["blog_id"] for r in csv.DictReader(f)}
 
 
+def load_have(path):
+    """이미 본문을 받아둔 글 목록 {blog_id: {log_no, ...}}."""
+    if not path.exists():
+        log.warning(f"재사용할 파일 없음: {path}")
+        return {}
+    csv.field_size_limit(10 ** 9)
+    have = {}
+    with open(path, encoding="utf-8-sig", newline="") as f:
+        for r in csv.DictReader(f):
+            have.setdefault(r["blog_id"], set()).add(r["log_no"])
+    return have
+
+
+def merge_reused(old_posts, reuse_path, out_posts):
+    """기존 CSV에 있던 본문을 sample_set만 붙여 새 posts 파일에 이어붙인다 (스트리밍)."""
+    if not reuse_path.exists():
+        return
+    csv.field_size_limit(10 ** 9)
+    want = {}
+    with open(reuse_path, encoding="utf-8-sig", newline="") as f:
+        for r in csv.DictReader(f):
+            want[(r["blog_id"], r["log_no"])] = r["sample_set"]
+    if not want:
+        return
+    n = 0
+    with open(old_posts, encoding="utf-8-sig", newline="") as fin, \
+         open(out_posts, "a", newline="", encoding="utf-8") as fout:
+        w = csv.DictWriter(fout, fieldnames=POST_COLS)
+        for r in csv.DictReader(fin):
+            key = (r["blog_id"], r["log_no"])
+            if key in want:
+                w.writerow({**{c: r.get(c, "") for c in POST_COLS},
+                            "sample_set": want[key]})
+                n += 1
+    log.info(f"기존 본문 {n:,}편 병합 완료 → {out_posts}")
+
+
 def open_writer(path, cols):
     new = not path.exists() or path.stat().st_size == 0
     f = open(path, "a", newline="", encoding="utf-8-sig" if new else "utf-8")
@@ -478,7 +623,13 @@ def main():
     ap.add_argument("--targets-only", action="store_true", help="mates_all.csv만 만들고 종료")
     ap.add_argument("--limit", type=int, default=0, help="앞에서 N개만 (테스트용)")
     ap.add_argument("--workers", type=int, default=WORKERS)
+    ap.add_argument("--out-dir", default="out", help="결과를 쓸 폴더 (기본 out)")
+    ap.add_argument("--reuse-posts", default="",
+                    help="이미 본문을 받아둔 posts CSV. 겹치는 글은 다시 안 받고 병합한다")
     args = ap.parse_args()
+
+    global OUT
+    OUT = Path(args.out_dir); OUT.mkdir(exist_ok=True)
 
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(threadName)s %(message)s",
@@ -501,13 +652,22 @@ def main():
 
     bpath = OUT / f"blogs_{args.collector}.csv"
     ppath = OUT / f"posts_{args.collector}.csv"
+    mpath = OUT / f"postmeta_{args.collector}.csv"
+    rpath = OUT / f"reuse_{args.collector}.csv"
     fpath = OUT / f"failed_{args.collector}.txt"
     done = done_ids(bpath)
     todo = [b for b in ids if b not in done]
     log.info(f"대상 {len(ids)}개 / 완료 {len(ids) - len(todo)}개 / 남음 {len(todo)}개")
 
+    have = load_have(Path(args.reuse_posts)) if args.reuse_posts else {}
+    if have:
+        log.info(f"기존 본문 {sum(len(v) for v in have.values()):,}편 재사용 가능 "
+                 f"({len(have)}개 블로그)")
+
     bf, bw = open_writer(bpath, BLOG_COLS)
     pf, pw = open_writer(ppath, POST_COLS)
+    mf, mw = open_writer(mpath, POSTMETA_COLS)
+    rf, rw = open_writer(rpath, ["blog_id", "log_no", "sample_set"])
     lock = threading.Lock()
     local = threading.local()
     failed = []
@@ -516,7 +676,8 @@ def main():
     def work(bid):
         if not hasattr(local, "c"):
             local.c = Client()
-        return crawl_blog(local.c, bid, mates.get(bid, {}), args.collector)
+        return crawl_blog(local.c, bid, mates.get(bid, {}), args.collector,
+                          have.get(bid, frozenset()))
 
     try:
         for rnd in range(2):                        # 1차 + 실패분 재시도 1회
@@ -530,12 +691,15 @@ def main():
                 for n, fut in enumerate(as_completed(futs), 1):
                     bid = futs[fut]
                     try:
-                        brow, prows = fut.result()
+                        brow, prows, mrows, rrows = fut.result()
                         with lock:                  # 글 먼저, 블로그 행은 나중 → 블로그 행이 있으면 완료
                             pw.writerows(prows); pf.flush()
+                            mw.writerows(mrows); mf.flush()
+                            rw.writerows(rrows); rf.flush()
                             bw.writerow(brow); bf.flush()
                         el = (time.time() - t0) / n
-                        log.info(f"[{n}/{len(todo)}] ✓ {bid} 글 {len(prows)}건 "
+                        log.info(f"[{n}/{len(todo)}] ✓ {bid} 전체 {len(mrows)}편 중 "
+                                 f"본문 새로 {len(prows)}편 + 재사용 {len(rrows)}편 "
                                  f"(평균 {el:.0f}s/블로그, 남은 예상 {el * (len(todo) - n) / 60:.0f}분)")
                     except Exception as e:
                         failed.append(bid)
@@ -544,10 +708,12 @@ def main():
     except KeyboardInterrupt:
         log.info("중단 — 다시 실행하면 이어서 수집")
     finally:
-        bf.close(); pf.close()
+        bf.close(); pf.close(); mf.close(); rf.close()
         fpath.write_text("\n".join(failed), encoding="utf-8")
 
-    log.info(f"완료 → {bpath}, {ppath} (실패 {len(failed)}개: {fpath})")
+    log.info(f"수집 완료 → {bpath}, {ppath}, {mpath} (실패 {len(failed)}개: {fpath})")
+    if args.reuse_posts:
+        merge_reused(Path(args.reuse_posts), rpath, ppath)
 
 
 if __name__ == "__main__":
