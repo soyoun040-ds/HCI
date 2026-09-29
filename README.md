@@ -1,4 +1,4 @@
-# HCI 7조 (onejuso) — Naver Mate Creator Reward Agent
+# HCI 7조 (soonejumin) — Naver Mate Creator Reward Agent
 
 네이버 블로그를 평가하는 **AI 에이전트**와, 그 평가 결과와 보상 산정 근거를 보여주는 **대시보드(사용자용 / 관리자용)**를 만드는 프로젝트예요.
 
