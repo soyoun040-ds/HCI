@@ -56,9 +56,10 @@ python crawler.py --collector 이름 --topics 1-6 --workers 5 --out-dir out2
 | `categories_json` | 카테고리별 글 수 | 주제 일관성(쏠림도) | ⚠️ 하위 카테고리가 상위에 중복 집계됨. 합계는 `parent_no`가 없는 것만 |
 | `topic_id`, `topic_name`, `assigned_category` | 메이트 선정 분야 | 분야별 비교 | ⚠️ 네이버가 정한 분야 1개. 실제 주제 분포와 다를 수 있음 |
 | `blog_directory` | 블로거가 설정한 주제 | 자기 인식 주제 | ⚠️ 본인 설정값. 6개 결측 |
-| `is_special`, `special_type` | 스페셜 지원금 라벨 | 검증용 정답 | ⚠️ **9월 스페셜은 8월 메이트 대상**이라 후보군과 모집단이 어긋남 (75명 중 10명이 9월 메이트 목록 밖) |
-| `selection_history` | 메이트·스페셜·올해의블로그·파워블로그 이력 | 과거 성과 | ⚠️ "이달의 블로그"는 공개 API에 없어 빠져 있음 |
-| `is_power_blog`, `is_year_of_blog`, `last_year_of_blog` | 이력 배지 | 과거 성과 | ✅ |
+| `is_special`, `special_type` | 스페셜 지원금 라벨 | 검증용 정답 | ⚠️ **9월 스페셜은 8월 메이트 대상**이라 후보군과 모집단이 어긋남 (75명 중 65명만 9월 메이트에도 선정) |
+| `selection_history` | 메이트·스페셜·올해의블로그·이달의블로그·파워블로그 이력 | 과거 성과 | ✅ |
+| `is_power_blog`, `is_year_of_blog`, `last_year_of_blog` | 파워블로그·올해의블로그 이력 | 과거 성과 | ✅ **배지 표시 설정과 무관한 실제 이력**. `last_year_of_blog`는 가장 최근 1개 연도만 |
+| `is_monthly_blog` | **이달의 블로그** (API `suggestionBlog`) | 과거 성과 | ✅ 386개 중 25명. 배지를 꺼놔도 True로 옴 |
 | `citation_info_text` | 인용수 3종을 합친 문장 | 사람이 읽기용 | ✅ 분석엔 숫자 칼럼 사용 |
 | `collector`, `collected_at`, `note` | 수집자, 시각, 비고 | 관리용 | ✅ `note`는 386행 전부 공란 = 문제 없었음 |
 
@@ -79,8 +80,9 @@ python crawler.py --collector 이름 --topics 1-6 --workers 5 --out-dir out2
 | `comments_json` | 댓글 원문 (89만 개) | 반응의 질, 스팸 여부 | ⚠️ **7/31 이전 댓글만, 글당 최대 100개.** `comment_count`와 개수가 안 맞음 |
 | `share_count` | 공유 수 | 확산 정도 | ✅ |
 | `buy_with_own_money` | 내돈내산 표시 | 진정성(대가성 표시) | ⚠️ 블로거가 표시를 켠 경우만 true. **1.4%만 true라서 false를 협찬으로 해석하면 안 됨** |
-| `scrap_count` | (이름만 스크랩) | — | ❌ **실제 스크랩 수가 아님.** 공개 API에 없어서 `share_count`를 복사한 값 |
-| `is_widget_mission`, `widget_mission_name` | 위젯 미션 연재 여부 | 참여 활동 | ❌ **키워드 매칭이라 오탐 많음.** true 358건 중 "챌린지" 171, "연재" 105 — 단어가 문장에 쓰인 것만으로 걸림 |
+| `is_widget_mission`, `widget_mission_name` | 위젯 미션 참여 여부 (주간일기·블로그씨 등) | 꾸준한 참여 활동 | ⚠️ **추정치.** 위젯 자체는 페이지에 안 실려서, 제목·본문에 프로그램 고유명이 나오는지로만 판단 → 놓치는 글이 있음 (거짓 음성) |
+
+`scrap_count`는 삭제했어요. 스크랩 수는 공개 API에 없어서 `share_count`(공유 수)를 복사한 값이었고, 정보가 전혀 없었어요.
 
 ### 전체 글 메타 (`postmeta_*.csv`, 989,280행)
 
@@ -102,12 +104,12 @@ python crawler.py --collector 이름 --topics 1-6 --workers 5 --out-dir out2
 | **활동성** | `total_post_count`, `blog_start_date`, `recent50_dates_json`, `postmeta`의 날짜 전체 |
 | **규모·반응** | `neighbor_count`, `total_visitor_count`, `share_count` |
 | **콘텐츠 품질** | `body_text`, `char_count`, `video_count`, `category_name` |
-| **쓰지 말 것** | `scrap_count`(중복), `is_widget_mission`(오탐) |
+| **과거 성과** | `is_monthly_blog`, `is_year_of_blog`, `is_power_blog`, `selection_history` |
 
 ## 5. 알려진 한계
 
 1. **반응 수의 시점** — 좋아요·댓글은 7/31이 아닌 수집 시점 값이에요. 글의 나이가 교란변수예요.
 2. **스페셜 라벨의 모집단** — 9월 스페셜은 8월 메이트 중에서 뽑혀서, 9월 메이트 명단과 어긋나요. **10월 스페셜은 9월 메이트(= 우리 후보군) 중에서 뽑히므로**, 9월 인용수 스냅샷 + 10월 초 명단을 합치면 시점이 맞는 데이터셋이 돼요.
 3. **표본 편향** — `recent_top`과 `alltime_top`은 반응이 좋은 글만 모은 표본이에요. 블로그의 평균을 볼 때는 `random`을 쓰세요.
-4. **이분 탐색 흔적 없음** — 1차 수집 때 첫 글 날짜를 이분 탐색으로 추정했는데, 2차 전수 스캔과 비교하니 386개 중 385개가 일치했어요 (1개는 그사이 글 삭제).
+4. **"없다"가 "아니다"는 아님** — `buy_with_own_money`(1.4%만 true)와 `is_widget_mission`은 **거짓 음성**이 많아요. 값이 있으면 확실하지만(정밀도 높음), 없다고 해서 아닌 건 아니에요(재현율 낮음). 반대로 `is_monthly_blog`·`is_year_of_blog`는 배지 표시 설정과 무관한 실제 이력이라 양쪽 다 믿을 수 있어요.
 5. **제3자 정보** — 댓글 작성자 닉네임과 원문이 들어 있어요. 공개 저장소에 올리지 마세요.

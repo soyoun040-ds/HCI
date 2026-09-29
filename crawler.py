@@ -80,6 +80,7 @@ BLOG_COLS = [
     "day_visitor_count", "total_visitor_count",
     "blog_directory",                   # 네이버 블로그 주제 디렉터리
     "is_power_blog", "is_year_of_blog", "last_year_of_blog",
+    "is_monthly_blog",                  # 이달의 블로그 (API suggestionBlog). 배지를 꺼놔도 True로 옴
     "recent50_dates_json",              # 7/31 이전 최근 50건 날짜
     # ── v2 (전체 스캔) 추가 컬럼 ──
     "pre_cutoff_post_count",            # 7/31 이전 공개 글 수 (전수)
@@ -94,7 +95,7 @@ POSTMETA_COLS = [                       # 전체 글 메타데이터 (본문 없
 
 POST_COLS = [
     "blog_id", "log_no", "title", "url", "post_date",
-    "like_count", "comment_count", "scrap_count",
+    "like_count", "comment_count",
     "image_count", "char_count",
     "category_name",
     "is_widget_mission",        # '나만의 실천 100일' 등 연재 위젯 여부
@@ -102,7 +103,7 @@ POST_COLS = [
     "body_text",
     "comments_json",            # [{"author":..., "text":..., "date":...}, ...]
     # ── 추가 컬럼 ──
-    "share_count",              # 공개 API의 shareCnt (스크랩 수는 비공개라 scrap_count에도 동일 값)
+    "share_count",              # 공개 API의 shareCnt (스크랩 수 자체는 비공개라 수집 불가)
     "buy_with_own_money",       # 내돈내산 표시 여부
     "video_count", "link_count", "heading_count",
     "post_datetime",
@@ -110,9 +111,12 @@ POST_COLS = [
     "sample_set",               # recent_top | alltime_top | random (겹치면 |로 연결)
 ]
 
+# 네이버가 운영하는 연재·챌린지 프로그램의 고유 이름만 쓴다.
+# '챌린지', '연재' 같은 일반 단어를 넣으면 해시태그(#클립챌린지)나
+# '자연재난', '천연재료' 같은 무관한 말까지 걸려서 오탐이 폭증한다.
 WIDGET_PATTERNS = [
     "나만의 실천 100일", "나만의 테마 마스터", "블로그씨", "주간일기",
-    "챌린지", "연재", "일일 미션", "오늘일기",
+    "오늘일기 챌린지", "블로그 챌린지",
 ]
 
 log = logging.getLogger("crawler")
@@ -401,11 +405,12 @@ def get_post_body(c, blog_id, log_no):
     # 스마트에디터는 소제목 대신 인용구 컴포넌트를 쓰는 경우가 많아 둘 다 센다
     headings = area.select(".se-sectionTitle, .se-quotation, h2, h3")
 
-    # 위젯 미션은 본문 밖(글 하단)에 붙는 경우도 있어 페이지 전체 텍스트에서 찾는다
-    page_text = soup.get_text(" ", strip=True)
+    # 위젯 미션 참여 여부의 '추정치'. 위젯 자체는 모바일 본문 페이지에 실리지 않아서,
+    # 제목이나 본문에 프로그램 고유명이 나오는지로만 판단한다 (놓치는 글이 있을 수 있음).
+    title = (soup.select_one("title").get_text(strip=True) if soup.select_one("title") else "")
     mission, mname = False, ""
     for pat in WIDGET_PATTERNS:
-        if pat in text[-1500:] or pat in text[:300] or pat in page_text[-3000:]:
+        if pat in title or pat in text:
             mission, mname = True, pat
             break
 
@@ -483,7 +488,7 @@ def crawl_blog(c, blog_id, mate, collector, have=frozenset()):
             "post_date": p["post_dt"].strftime("%Y-%m-%d"),
             "post_datetime": p["post_dt"].strftime("%Y-%m-%d %H:%M"),
             "like_count": p["like_count"], "comment_count": p["comment_count"],
-            "scrap_count": p["share_count"], "share_count": p["share_count"],
+            "share_count": p["share_count"],
             "buy_with_own_money": p["buy_with_own_money"],
             "image_count": body["image_count"], "char_count": body["char_count"],
             "video_count": body["video_count"], "link_count": body["link_count"],
@@ -504,6 +509,8 @@ def crawl_blog(c, blog_id, mate, collector, have=frozenset()):
         hist.append(f"스페셜지원금 {mate['special_type']}(2026-09)")
     if info.get("isYearOfBlog") or info.get("lastYearOfBlog"):
         hist.append(f"올해의블로그({info.get('lastYearOfBlog') or ''})")
+    if info.get("suggestionBlog"):
+        hist.append("이달의블로그")
     if info.get("powerBlog"):
         hist.append("파워블로그")
     citation_text = (f"누적 {mc.get('cumulativeCount', '')} / "
@@ -536,6 +543,7 @@ def crawl_blog(c, blog_id, mate, collector, have=frozenset()):
         "is_power_blog": bool(info.get("powerBlog")),
         "is_year_of_blog": bool(info.get("isYearOfBlog")),
         "last_year_of_blog": info.get("lastYearOfBlog", ""),
+        "is_monthly_blog": bool(info.get("suggestionBlog")),
         "recent50_dates_json": json.dumps(
             [p["post_dt"].strftime("%Y-%m-%d %H:%M") for p in posts[:RECENT_N]]),
         "pre_cutoff_post_count": len(posts),
