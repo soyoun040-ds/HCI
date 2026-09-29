@@ -81,11 +81,9 @@ BLOG_COLS = [
     "blog_directory",                   # 네이버 블로그 주제 디렉터리
     "is_power_blog", "is_year_of_blog", "last_year_of_blog",
     "recent50_dates_json",              # 7/31 이전 최근 50건 날짜
-    "scanned_post_count",               # 반응 수를 본 글 수 (전체 스캔 시 = 컷오프 이전 전체 글 수)
     # ── v2 (전체 스캔) 추가 컬럼 ──
     "pre_cutoff_post_count",            # 7/31 이전 공개 글 수 (전수)
     "sampled_post_count",               # 본문을 받은 글 수 (표본 3종 합집합)
-    "scan_mode",                        # full = 전체 훑기, recent200 = 구버전
 ]
 
 POSTMETA_COLS = [                       # 전체 글 메타데이터 (본문 없음)
@@ -540,10 +538,8 @@ def crawl_blog(c, blog_id, mate, collector, have=frozenset()):
         "last_year_of_blog": info.get("lastYearOfBlog", ""),
         "recent50_dates_json": json.dumps(
             [p["post_dt"].strftime("%Y-%m-%d %H:%M") for p in posts[:RECENT_N]]),
-        "scanned_post_count": len(posts),
         "pre_cutoff_post_count": len(posts),
         "sampled_post_count": len(sample),
-        "scan_mode": "full",
     }
     if c.failures:
         raise RuntimeError(f"요청 {c.failures}건 최종 실패 → 저장 안 함 (재실행 시 다시 수집)")
