@@ -761,6 +761,38 @@ def merge_reused(old_posts, reuse_path, out_posts):
     log.info(f"기존 본문 {n:,}편 병합 완료 → {out_posts}")
 
 
+GENERAL_TARGET_COLS = ["blog_id", "topic_id", "topic_name", "general_category"]
+
+
+def save_general_targets(path, general):
+    with open(path, "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.DictWriter(f, fieldnames=GENERAL_TARGET_COLS); w.writeheader()
+        for bid, m in general.items():
+            w.writerow({"blog_id": bid, **{k: m[k] for k in GENERAL_TARGET_COLS[1:]}})
+
+
+def collected_general(bpath):
+    """이미 수집이 끝난 일반 블로그 (blogs CSV 에서 group=general 인 행)."""
+    if not bpath.exists():
+        return {}
+    with open(bpath, encoding="utf-8-sig", newline="") as f:
+        return {r["blog_id"]: {"topic_id": r.get("topic_id", ""),
+                               "topic_name": r.get("topic_name", ""),
+                               "general_category": r.get("general_category", ""),
+                               "is_special": False, "in_mate_list": False, "group": "general"}
+                for r in csv.DictReader(f) if r.get("group") == "general"}
+
+
+def load_general_targets(path):
+    if not path.exists():
+        return {}
+    with open(path, encoding="utf-8-sig", newline="") as f:
+        return {r["blog_id"]: {"topic_id": r["topic_id"], "topic_name": r["topic_name"],
+                               "general_category": r["general_category"],
+                               "is_special": False, "in_mate_list": False, "group": "general"}
+                for r in csv.DictReader(f)}
+
+
 def open_writer(path, cols):
     new = not path.exists() or path.stat().st_size == 0
     f = open(path, "a", newline="", encoding="utf-8-sig" if new else "utf-8")
@@ -799,6 +831,12 @@ def main():
     if args.targets_only:
         return
 
+    bpath = OUT / f"blogs_{args.collector}.csv"
+    ppath = OUT / f"posts_{args.collector}.csv"
+    mpath = OUT / f"postmeta_{args.collector}.csv"
+    rpath = OUT / f"reuse_{args.collector}.csv"
+    fpath = OUT / f"failed_{args.collector}.txt"
+
     topic_nos = parse_topic_nos(args.topics) if args.topics else set()
     if args.blogs:
         ids = [l.strip() for l in Path(args.blogs).read_text(encoding="utf-8").splitlines()
@@ -812,23 +850,37 @@ def main():
         mate_cnt = collections.Counter(m["topic_id"] for m in mates.values() if m.get("in_mate_list"))
         if args.general == "match":
             quota = {no: mate_cnt.get(TOPICS[no], 0) for no in topic_nos}
-            log.info("일반 블로그 후보 수집 시작 (분야별 메이트 인원과 동일)")
         else:
             quota = {no: int(args.general) for no in topic_nos}
-            log.info(f"일반 블로그 후보 수집 시작 (분야당 {args.general}명)")
-        log.info("  목표: " + ", ".join(f"{TOPIC_NAMES[n]} {quota[n]}" for n in sorted(quota)))
-        general = harvest_general(Client(), quota, exclude=set(mates))
+
+        # 후보 명단을 파일에 남겨 둔다. 재실행할 때 다시 뽑으면 지난번과 다른
+        # 블로그가 뽑혀서 정원을 넘기기 때문이다.
+        gpath = OUT / f"general_targets_{args.collector}.csv"
+        general = load_general_targets(gpath)
+        if general:
+            log.info(f"일반 블로그 후보 {len(general)}명 (기존 명단 {gpath} 재사용)")
+        else:
+            # 명단 파일 없이 이미 수집한 일반 블로그가 있으면(구버전으로 돌린 경우)
+            # 그만큼 정원에서 빼고 모자란 만큼만 새로 뽑는다.
+            general = collected_general(bpath)
+            for m in general.values():
+                no = next((n for n in quota if TOPICS[n] == m["topic_id"]), None)
+                if no:
+                    quota[no] = max(0, quota[no] - 1)
+            if general:
+                log.info(f"이미 수집한 일반 블로그 {len(general)}명 → 남은 정원만 채운다")
+            log.info("일반 블로그 후보 수집 시작 (분야별 메이트 인원과 동일)"
+                     if args.general == "match" else
+                     f"일반 블로그 후보 수집 시작 (분야당 {args.general}명)")
+            log.info("  목표: " + ", ".join(f"{TOPIC_NAMES[n]} {quota[n]}" for n in sorted(quota)))
+            general.update(harvest_general(Client(), quota, exclude=set(mates) | set(general)))
+            save_general_targets(gpath, general)
         mates.update(general)                 # crawl_blog 가 참조하는 정보에 합친다
         ids += list(general)
 
     if args.limit:
         ids = ids[:args.limit]
 
-    bpath = OUT / f"blogs_{args.collector}.csv"
-    ppath = OUT / f"posts_{args.collector}.csv"
-    mpath = OUT / f"postmeta_{args.collector}.csv"
-    rpath = OUT / f"reuse_{args.collector}.csv"
-    fpath = OUT / f"failed_{args.collector}.txt"
     done = done_ids(bpath)
     todo = [b for b in ids if b not in done]
     log.info(f"대상 {len(ids)}개 / 완료 {len(ids) - len(todo)}개 / 남음 {len(todo)}개")
