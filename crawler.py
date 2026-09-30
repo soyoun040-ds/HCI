@@ -693,7 +693,9 @@ def crawl_blog(c, blog_id, mate, collector, have=frozenset()):
             [p["post_dt"].strftime("%Y-%m-%d %H:%M") for p in posts[:RECENT_N]]),
         "pre_cutoff_post_count": len(posts),
         "sampled_post_count": len(sample),
-        "group": mate.get("group") or ("special" if mate.get("is_special") else "mate"),
+        "group": (mate.get("group")
+                  or ("special" if mate.get("is_special")
+                      else "mate" if info.get("isNaverMateBlog") else "general")),
         "general_category": mate.get("general_category", ""),
         "is_naver_mate_blog": bool(info.get("isNaverMateBlog")),
         "is_official_blog": bool(info.get("officialBlog")),
