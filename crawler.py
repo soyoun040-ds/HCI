@@ -1,23 +1,39 @@
 """
-네이버 블로그 크롤러 (HCI Team 7 공용) — 네이버 메이트 / 스페셜 지원금 대상
+네이버 블로그 크롤러 (HCI Team 7 공용) — 메이트 / 스페셜 / 일반 블로그
 2026-07-31 이전 데이터만 수집
+
+담당 분야 (--topics)
+    하나  1,2,3,4                   국내여행 해외여행 푸드 레시피
+    민서  5,6,13,14,15,16,17,18     패션 뷰티 애니메이션 공연/전시 음악 책 예술 IT/테크
+    소연  7,8,9,10,11,12,19,20      리빙 반려동물 건강 육아 영화 방송 자동차 교육
+    주원  21,22,23,24,25            경제 사회 스포츠 게임 취미
 
 사용법
     # 1) 메이트 전체 목록 + 스페셜 라벨만 받기 (빠름, 1분)
     python crawler.py --collector 소연 --targets-only
 
-    # 2) 분야 지정 크롤링 (스페셜 지원금 대상자는 --with-special 로 전원 포함)
-    python crawler.py --collector 소연 --topics 7-12 --with-special
+    # 2) 본 수집 — 메이트 + 스페셜 + 일반 블로그(분야당 50명)
+    python crawler.py --collector 소연 --topics 7,8,9,10,11,12,19,20 \
+        --with-special --general 50 --workers 5 --out-dir out3
 
     # 3) blogId 목록 파일로 크롤링 (한 줄에 blogId 하나)
     python crawler.py --collector 소연 --blogs blog_list_소연.txt
 
     중간에 끊겨도 같은 명령을 다시 실행하면 끝난 블로그는 건너뛰고 이어서 수집한다.
+    이미 본문을 받아둔 파일이 있으면 --reuse-posts 로 재사용한다.
+
+수집 대상 (group 칼럼)
+    mate     현재 메이트
+    special  스페셜 지원금 대상자
+    general  일반 블로그. 네이버 블로그 '주제별 보기'에서 뽑으며,
+             수집 시점에 메이트가 아니면 과거 이력이 있어도 포함한다.
+             인용수 관련 칼럼은 전부 결측이다.
 
 출력
     out/mates_all.csv        메이트 1명 = 1행 (분야, 인용수, 스페셜 여부 = 정답 라벨)
     out/blogs_소연.csv        블로그 1개 = 1행
-    out/posts_소연.csv        글 1개 = 1행 (blog_id로 조인)
+    out/postmeta_소연.csv     7/31 이전 전체 글 1편 = 1행 (본문 없음)
+    out/posts_소연.csv        본문을 받은 글 1편 = 1행 (blog_id로 조인)
     out/crawl_소연.log        진행 로그
     out/failed_소연.txt       실패한 blogId (재실행 시 다시 시도됨)
 
@@ -44,8 +60,7 @@ CUTOFF = datetime(2026, 7, 31, 23, 59, 59)   # 이 날짜 이후 글은 전부 �
 MAX_POSTS_SCAN = 200                          # '최근' 표본을 뽑을 범위 (컷오프 이전 최근 N개)
 TOP_N = 50                                    # 최근 표본: 그중 좋아요+댓글 상위 N개
 ALLTIME_TOP_N = 50                            # 전체기간 표본: 전 기간 좋아요+댓글 상위 N개
-RANDOM_PER_YEAR = 5                           # 무작위 표본: 연도당 N개
-RANDOM_N = 30                                 # 무작위 표본: 블로그당 최대 N개
+RANDOM_PER_MONTH = 1                          # 무작위 표본: 달마다 N개 (1년이면 최대 12편)
 RECENT_N = 50                                 # 최근 N건 날짜 기록
 MAX_COMMENTS = 100                            # 글당 댓글 원문 최대 수 (컷오프 이전 댓글만)
 PAGE_SIZE = 30                                # post-list API 최대값 (50은 400 에러)
@@ -58,6 +73,41 @@ UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.
       "(KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1")
 
 TOPICS = {i: f"TOPIC_{i:03d}" for i in range(1, 26)}
+
+TOPIC_NAMES = {
+    1: "국내여행", 2: "해외여행", 3: "푸드", 4: "레시피", 5: "패션", 6: "뷰티",
+    7: "리빙", 8: "반려동물", 9: "건강", 10: "육아", 11: "영화", 12: "방송",
+    13: "애니메이션", 14: "공연/전시", 15: "음악", 16: "책", 17: "예술", 18: "IT/테크",
+    19: "자동차", 20: "교육", 21: "경제", 22: "사회", 23: "스포츠", 24: "게임", 25: "취미",
+}
+
+# ── 일반 블로그 수집용: 메이트 분야 → 네이버 블로그 '주제별 보기' 카테고리 ──
+# (팀에서 정한 매칭표. 한 분야에 여러 카테고리가 대응할 수 있다)
+GENERAL_DIRS = {
+    1: ["국내여행"], 2: ["세계여행"], 3: ["요리·레시피"], 4: ["요리·레시피"],
+    5: ["패션·미용"], 6: ["패션·미용"],
+    7: ["인테리어·DIY", "상품리뷰"], 8: ["반려동물"], 9: ["건강·의학"], 10: ["육아·결혼"],
+    11: ["영화"], 12: ["방송"],
+    13: ["만화·애니"], 14: ["공연·전시"], 15: ["음악"], 16: ["문학·책"],
+    17: ["미술·디자인", "공연·전시"], 18: ["IT·컴퓨터"],
+    19: ["자동차"], 20: ["어학·외국어", "교육·학문"],
+    21: ["비즈니스·경제"], 22: ["사회·정치"], 23: ["스포츠"], 24: ["게임"],
+    25: ["취미", "원예·재배"],
+}
+
+# 주제판 카테고리 → directorySeq. 이 번호로 요청해도 다른 카테고리 글이 섞여 오므로,
+# 받아온 뒤 글마다 붙어 있는 directory.name 으로 다시 걸러야 한다.
+DIR_SEQ = {
+    "문학·책": 5, "영화": 6, "공연·전시": 7, "미술·디자인": 8, "드라마": 9, "방송": 10,
+    "스타·연예인": 11, "음악": 12, "만화·애니": 13, "일상·생각": 14, "육아·결혼": 15,
+    "반려동물": 16, "좋은글·이미지": 17, "패션·미용": 18, "인테리어·DIY": 19,
+    "요리·레시피": 20, "상품리뷰": 21, "게임": 22, "스포츠": 23, "자동차": 25,
+    "취미": 26, "국내여행": 27, "세계여행": 28, "맛집": 29, "IT·컴퓨터": 30,
+    "사회·정치": 31, "건강·의학": 32, "비즈니스·경제": 33, "교육·학문": 34,
+    "어학·외국어": 35, "원예·재배": 36,
+}
+
+SECTION_API = "https://section.blog.naver.com/ajax/DirectoryPostList.naver"
 
 # ── 스키마 (절대 수정 금지, 추가만) ──────────────────────────
 BLOG_COLS = [
@@ -85,6 +135,10 @@ BLOG_COLS = [
     # ── v2 (전체 스캔) 추가 컬럼 ──
     "pre_cutoff_post_count",            # 7/31 이전 공개 글 수 (전수)
     "sampled_post_count",               # 본문을 받은 글 수 (표본 3종 합집합)
+    # ── v3 (일반 블로그 포함) 추가 컬럼 ──
+    "group",                            # general / mate / special
+    "general_category",                 # 일반 블로그를 뽑아온 주제판 카테고리
+    "is_naver_mate_blog",               # 수집 시점에 메이트인지 (API isNaverMateBlog)
 ]
 
 POSTMETA_COLS = [                       # 전체 글 메타데이터 (본문 없음)
@@ -241,6 +295,78 @@ def fetch_mates(c):
     return mates
 
 
+# ── 0-2. 일반 블로그 후보 수집 (네이버 블로그 > 주제별 보기) ──
+def section_page(c, seq, page):
+    """주제판 글 목록 한 페이지(10건).
+
+    ★ 페이지 파라미터는 pageNo 다. URL에 보이는 currentPage 를 넣으면 무시되고
+      1페이지만 계속 돌아온다 (실제 호출부: themePostListModel.getThemePostList).
+    """
+    txt = c.get(SECTION_API, {"directorySeq": seq, "pageNo": page},
+                referer="https://section.blog.naver.com/", as_json=False)
+    if not txt:
+        return []
+    try:
+        return json.loads(txt[txt.index("{"):])["result"]["postList"]
+    except (ValueError, KeyError):
+        return []
+
+
+def is_current_mate(c, blog_id):
+    """지금 메이트인지. 과거 이력이 있어도 지금 비선정자면 일반 블로그로 본다."""
+    info = (c.get(f"{M_API}/blogs/{blog_id}",
+                  referer=f"https://m.blog.naver.com/{blog_id}") or {}).get("result")
+    if not info:
+        return None                                   # 조회 실패 → 후보에서 제외
+    return bool(info.get("isNaverMateBlog"))
+
+
+def harvest_general(c, topic_nos, per_topic, exclude, max_pages=200):
+    """주제판에서 일반 블로그 후보를 모은다.
+
+    반환: {blog_id: {topic_id, topic_name, general_category, ...}}
+    주제판은 카테고리 번호로 요청해도 다른 카테고리가 섞여 오므로,
+    글에 붙은 directory.name 이 목표 카테고리와 같은 것만 남긴다.
+    """
+    found, seen = {}, set(exclude)
+    for no in topic_nos:
+        cats = GENERAL_DIRS.get(no, [])
+        want = {n: 0 for n in cats}
+        for cat in cats:
+            seq = DIR_SEQ.get(cat)
+            if not seq:
+                log.warning(f"'{cat}' 카테고리 번호를 모름 — 건너뜀")
+                continue
+            quota = per_topic // len(cats) + (per_topic % len(cats) if cat == cats[-1] else 0)
+            page = 1
+            while want[cat] < quota and page <= max_pages:
+                items = section_page(c, seq, page)
+                if not items:
+                    break
+                for it in items:
+                    if want[cat] >= quota:
+                        break
+                    if (it.get("directory") or {}).get("name") != cat:
+                        continue               # 다른 카테고리 글이 섞여 온 것
+                    bid = it.get("domainIdOrBlogId")
+                    if not bid or bid in seen:
+                        continue
+                    seen.add(bid)
+                    mate = is_current_mate(c, bid)
+                    if mate is None or mate:   # 조회 실패이거나 현재 메이트면 제외
+                        continue
+                    found[bid] = {
+                        "topic_id": TOPICS[no], "topic_name": TOPIC_NAMES[no],
+                        "is_special": False, "in_mate_list": False,
+                        "group": "general", "general_category": cat,
+                    }
+                    want[cat] += 1
+                page += 1
+            log.info(f"  [{TOPIC_NAMES[no]}] {cat}: {want[cat]}명 (목표 {quota})")
+    log.info(f"일반 블로그 후보 {len(found)}명 확보")
+    return found
+
+
 # ── 1. 블로그 메타 ──────────────────────────────────────────
 def get_blog_meta(c, blog_id):
     ref = f"https://m.blog.naver.com/{blog_id}"
@@ -306,7 +432,10 @@ def pick_samples(posts):
 
     recent_top  : 최근 MAX_POSTS_SCAN개 중 좋아요+댓글 상위 TOP_N  → 요즘 잘 먹히는 글
     alltime_top : 전 기간 좋아요+댓글 상위 ALLTIME_TOP_N            → 대표작/최고 수준
-    random      : 연도별 무작위 (연도당 RANDOM_PER_YEAR, 최대 RANDOM_N) → 평소 글의 평균
+    random      : 달마다 1편씩 무작위 (1년이면 최대 12편)            → 평소 글의 평균
+
+    random 은 상위 표본에 뽑힌 글을 빼고 고른다. 상위권 글이 '평소 수준' 표본에
+    섞이면 평균이 위로 끌려가서 두 표본을 비교하는 의미가 없어진다.
     """
     def rank(sub, n):
         return sorted(sub, key=lambda p: (p["like_count"] + p["comment_count"],
@@ -318,16 +447,16 @@ def pick_samples(posts):
     for p in rank(posts, ALLTIME_TOP_N):
         tag.setdefault(p["log_no"], []).append("alltime_top")
 
-    by_year = {}
+    by_month = {}
     for p in posts:
-        by_year.setdefault(p["post_dt"].year, []).append(p)
+        if p["log_no"] in tag:                    # 상위 표본에 이미 뽑힌 글은 제외
+            continue
+        by_month.setdefault((p["post_dt"].year, p["post_dt"].month), []).append(p)
     # 블로그마다 고정 시드 (파이썬 hash()는 실행마다 달라져서 log_no 를 그대로 쓴다)
     rnd = random.Random(int(posts[0]["log_no"]) if posts else 0)
-    picked = []
-    for year in sorted(by_year, reverse=True):
-        picked += rnd.sample(by_year[year], min(RANDOM_PER_YEAR, len(by_year[year])))
-    for p in picked[:RANDOM_N]:
-        tag.setdefault(p["log_no"], []).append("random")
+    for ym in sorted(by_month, reverse=True):
+        for p in rnd.sample(by_month[ym], min(RANDOM_PER_MONTH, len(by_month[ym]))):
+            tag.setdefault(p["log_no"], []).append("random")
 
     return {k: "|".join(v) for k, v in tag.items()}
 
@@ -501,7 +630,7 @@ def crawl_blog(c, blog_id, mate, collector, have=frozenset()):
             "sample_set": sset,
         })
 
-    mc = info.get("mateCitations") or {}
+    mc = info.get("mateCitations") or {}      # 일반 블로그는 없음 → 인용수 전부 결측
     hist = []
     if mate.get("in_mate_list"):
         hist.append("네이버메이트(2026-09)")
@@ -548,6 +677,9 @@ def crawl_blog(c, blog_id, mate, collector, have=frozenset()):
             [p["post_dt"].strftime("%Y-%m-%d %H:%M") for p in posts[:RECENT_N]]),
         "pre_cutoff_post_count": len(posts),
         "sampled_post_count": len(sample),
+        "group": mate.get("group") or ("special" if mate.get("is_special") else "mate"),
+        "general_category": mate.get("general_category", ""),
+        "is_naver_mate_blog": bool(info.get("isNaverMateBlog")),
     }
     if c.failures:
         raise RuntimeError(f"요청 {c.failures}건 최종 실패 → 저장 안 함 (재실행 시 다시 수집)")
@@ -555,14 +687,15 @@ def crawl_blog(c, blog_id, mate, collector, have=frozenset()):
 
 
 # ── 6. 메인 ─────────────────────────────────────────────────
-def parse_topics(s):
+def parse_topic_nos(s):
+    """'7-12' 또는 '7,8,9,19,20' → {7,8,9,...}"""
     out = set()
     for part in s.split(","):
         if "-" in part:
             a, b = part.split("-"); out |= set(range(int(a), int(b) + 1))
         elif part.strip():
             out.add(int(part))
-    return {TOPICS[i] for i in out}
+    return out
 
 
 def done_ids(path):
@@ -624,6 +757,8 @@ def main():
     ap.add_argument("--blogs", help="blogId 목록 txt")
     ap.add_argument("--topics", help="분야 번호, 예: 7-12 또는 1,3,5")
     ap.add_argument("--with-special", action="store_true", help="스페셜 대상자 전원 포함")
+    ap.add_argument("--general", type=int, default=0, metavar="N",
+                    help="분야당 일반 블로그 N명을 주제별 보기에서 뽑아 함께 수집")
     ap.add_argument("--targets-only", action="store_true", help="mates_all.csv만 만들고 종료")
     ap.add_argument("--limit", type=int, default=0, help="앞에서 N개만 (테스트용)")
     ap.add_argument("--workers", type=int, default=WORKERS)
@@ -644,13 +779,21 @@ def main():
     if args.targets_only:
         return
 
+    topic_nos = parse_topic_nos(args.topics) if args.topics else set()
     if args.blogs:
         ids = [l.strip() for l in Path(args.blogs).read_text(encoding="utf-8").splitlines()
                if l.strip() and not l.startswith("#")]
     else:
-        tset = parse_topics(args.topics) if args.topics else set()
+        tset = {TOPICS[n] for n in topic_nos}
         ids = [b for b, m in mates.items()
                if m["topic_id"] in tset or (args.with_special and m["is_special"])]
+
+    if args.general:
+        log.info(f"일반 블로그 후보 수집 시작 (분야당 {args.general}명)")
+        general = harvest_general(Client(), sorted(topic_nos), args.general, exclude=set(mates))
+        mates.update(general)                 # crawl_blog 가 참조하는 정보에 합친다
+        ids += list(general)
+
     if args.limit:
         ids = ids[:args.limit]
 
