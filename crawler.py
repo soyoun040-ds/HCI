@@ -12,9 +12,9 @@
     # 1) 메이트 전체 목록 + 스페셜 라벨만 받기 (빠름, 1분)
     python crawler.py --collector 소연 --targets-only
 
-    # 2) 본 수집 — 메이트 + 스페셜 + 일반 블로그(분야당 50명)
+    # 2) 본 수집 — 메이트 + 스페셜 + 일반 블로그(분야별 메이트와 같은 인원)
     python crawler.py --collector 소연 --topics 7,8,9,10,11,12,19,20 \
-        --with-special --general 50 --workers 5 --out-dir out3
+        --with-special --general match --workers 5 --out-dir out3
 
     # 3) blogId 목록 파일로 크롤링 (한 줄에 blogId 하나)
     python crawler.py --collector 소연 --blogs blog_list_소연.txt
@@ -49,6 +49,7 @@ import random
 import logging
 import argparse
 import threading
+import collections
 from datetime import datetime
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -139,6 +140,7 @@ BLOG_COLS = [
     "group",                            # general / mate / special
     "general_category",                 # 일반 블로그를 뽑아온 주제판 카테고리
     "is_naver_mate_blog",               # 수집 시점에 메이트인지 (API isNaverMateBlog)
+    "is_official_blog",                 # 기업·기관 공식 블로그 (분석 때 빼고 싶을 수 있음)
 ]
 
 POSTMETA_COLS = [                       # 전체 글 메타데이터 (본문 없음)
@@ -321,30 +323,35 @@ def is_current_mate(c, blog_id):
     return bool(info.get("isNaverMateBlog"))
 
 
-def harvest_general(c, topic_nos, per_topic, exclude, max_pages=200):
-    """주제판에서 일반 블로그 후보를 모은다.
+def harvest_general(c, quota_by_topic, exclude, max_pages=400):
+    """주제판(네이버 블로그 > 주제별 보기)에서 일반 블로그 후보를 모은다.
 
+    quota_by_topic: {분야번호: 뽑을 인원}
     반환: {blog_id: {topic_id, topic_name, general_category, ...}}
-    주제판은 카테고리 번호로 요청해도 다른 카테고리가 섞여 오므로,
+
+    주제판은 카테고리 번호로 요청해도 다른 카테고리 글이 섞여 오므로,
     글에 붙은 directory.name 이 목표 카테고리와 같은 것만 남긴다.
+    블로그 자체 주제(blogDirectoryName)로는 거르지 않는다. 메이트도 자기 분야와
+    블로그 주제가 79%만 일치해서, 일반 블로그만 엄격히 거르면 두 집단이 어긋난다.
     """
     found, seen = {}, set(exclude)
-    for no in topic_nos:
-        cats = GENERAL_DIRS.get(no, [])
-        want = {n: 0 for n in cats}
-        for cat in cats:
-            seq = DIR_SEQ.get(cat)
-            if not seq:
-                log.warning(f"'{cat}' 카테고리 번호를 모름 — 건너뜀")
-                continue
-            quota = per_topic // len(cats) + (per_topic % len(cats) if cat == cats[-1] else 0)
-            page = 1
-            while want[cat] < quota and page <= max_pages:
+    for no in sorted(quota_by_topic):
+        target = quota_by_topic[no]
+        cats = [cat for cat in GENERAL_DIRS.get(no, []) if DIR_SEQ.get(cat)]
+        if not cats or target <= 0:
+            continue
+        got = {cat: 0 for cat in cats}
+        # 카테고리가 여러 개면 목표 인원을 나눠 가진다 (예: 리빙 = 인테리어·DIY + 상품리뷰)
+        share = [target // len(cats)] * len(cats)
+        share[-1] += target - sum(share)
+        for cat, want in zip(cats, share):
+            seq, page = DIR_SEQ[cat], 1
+            while got[cat] < want and page <= max_pages:
                 items = section_page(c, seq, page)
                 if not items:
-                    break
+                    break                      # 피드 끝
                 for it in items:
-                    if want[cat] >= quota:
+                    if got[cat] >= want:
                         break
                     if (it.get("directory") or {}).get("name") != cat:
                         continue               # 다른 카테고리 글이 섞여 온 것
@@ -352,17 +359,17 @@ def harvest_general(c, topic_nos, per_topic, exclude, max_pages=200):
                     if not bid or bid in seen:
                         continue
                     seen.add(bid)
-                    mate = is_current_mate(c, bid)
-                    if mate is None or mate:   # 조회 실패이거나 현재 메이트면 제외
+                    if is_current_mate(c, bid) is not False:   # 메이트이거나 조회 실패
                         continue
                     found[bid] = {
                         "topic_id": TOPICS[no], "topic_name": TOPIC_NAMES[no],
                         "is_special": False, "in_mate_list": False,
                         "group": "general", "general_category": cat,
                     }
-                    want[cat] += 1
+                    got[cat] += 1
                 page += 1
-            log.info(f"  [{TOPIC_NAMES[no]}] {cat}: {want[cat]}명 (목표 {quota})")
+            mark = "" if got[cat] >= want else "  ← 피드가 모자람"
+            log.info(f"  [{TOPIC_NAMES[no]}] {cat}: {got[cat]}/{want}명{mark}")
     log.info(f"일반 블로그 후보 {len(found)}명 확보")
     return found
 
@@ -680,6 +687,7 @@ def crawl_blog(c, blog_id, mate, collector, have=frozenset()):
         "group": mate.get("group") or ("special" if mate.get("is_special") else "mate"),
         "general_category": mate.get("general_category", ""),
         "is_naver_mate_blog": bool(info.get("isNaverMateBlog")),
+        "is_official_blog": bool(info.get("officialBlog")),
     }
     if c.failures:
         raise RuntimeError(f"요청 {c.failures}건 최종 실패 → 저장 안 함 (재실행 시 다시 수집)")
@@ -757,8 +765,9 @@ def main():
     ap.add_argument("--blogs", help="blogId 목록 txt")
     ap.add_argument("--topics", help="분야 번호, 예: 7-12 또는 1,3,5")
     ap.add_argument("--with-special", action="store_true", help="스페셜 대상자 전원 포함")
-    ap.add_argument("--general", type=int, default=0, metavar="N",
-                    help="분야당 일반 블로그 N명을 주제별 보기에서 뽑아 함께 수집")
+    ap.add_argument("--general", default="", metavar="N|match",
+                    help="일반 블로그도 함께 수집. 숫자면 분야당 N명, "
+                         "'match'면 분야별 메이트 인원과 같은 수로 뽑는다")
     ap.add_argument("--targets-only", action="store_true", help="mates_all.csv만 만들고 종료")
     ap.add_argument("--limit", type=int, default=0, help="앞에서 N개만 (테스트용)")
     ap.add_argument("--workers", type=int, default=WORKERS)
@@ -789,8 +798,15 @@ def main():
                if m["topic_id"] in tset or (args.with_special and m["is_special"])]
 
     if args.general:
-        log.info(f"일반 블로그 후보 수집 시작 (분야당 {args.general}명)")
-        general = harvest_general(Client(), sorted(topic_nos), args.general, exclude=set(mates))
+        mate_cnt = collections.Counter(m["topic_id"] for m in mates.values() if m.get("in_mate_list"))
+        if args.general == "match":
+            quota = {no: mate_cnt.get(TOPICS[no], 0) for no in topic_nos}
+            log.info("일반 블로그 후보 수집 시작 (분야별 메이트 인원과 동일)")
+        else:
+            quota = {no: int(args.general) for no in topic_nos}
+            log.info(f"일반 블로그 후보 수집 시작 (분야당 {args.general}명)")
+        log.info("  목표: " + ", ".join(f"{TOPIC_NAMES[n]} {quota[n]}" for n in sorted(quota)))
+        general = harvest_general(Client(), quota, exclude=set(mates))
         mates.update(general)                 # crawl_blog 가 참조하는 정보에 합친다
         ids += list(general)
 
