@@ -62,6 +62,7 @@ MAX_POSTS_SCAN = 200                          # '최근' 표본을 뽑을 범위
 TOP_N = 50                                    # 최근 표본: 그중 좋아요+댓글 상위 N개
 ALLTIME_TOP_N = 50                            # 전체기간 표본: 전 기간 좋아요+댓글 상위 N개
 RANDOM_PER_MONTH = 1                          # 무작위 표본: 달마다 N개 (1년이면 최대 12편)
+RANDOM_N = 50                                 # 무작위 표본: 블로그당 최대 N편
 RECENT_N = 50                                 # 최근 N건 날짜 기록
 MAX_COMMENTS = 100                            # 글당 댓글 원문 최대 수 (컷오프 이전 댓글만)
 PAGE_SIZE = 30                                # post-list API 최대값 (50은 400 에러)
@@ -468,7 +469,13 @@ def pick_samples(posts):
         by_month.setdefault((p["post_dt"].year, p["post_dt"].month), []).append(p)
     # 블로그마다 고정 시드 (파이썬 hash()는 실행마다 달라져서 log_no 를 그대로 쓴다)
     rnd = random.Random(int(posts[0]["log_no"]) if posts else 0)
-    for ym in sorted(by_month, reverse=True):
+    months = sorted(by_month, reverse=True)
+    if len(months) > RANDOM_N:
+        # 오래 운영한 블로그는 최근 50개월만 자르면 옛 시기가 통째로 빠진다.
+        # 전 기간에 걸쳐 고르게 50개 달을 고른다.
+        step = len(months) / RANDOM_N
+        months = [months[int(i * step)] for i in range(RANDOM_N)]
+    for ym in months:
         for p in rnd.sample(by_month[ym], min(RANDOM_PER_MONTH, len(by_month[ym]))):
             tag.setdefault(p["log_no"], []).append("random")
 
