@@ -41,7 +41,7 @@ pip install requests beautifulsoup4 lxml
 
 ```bash
 # 메이트 + 스페셜 + 일반 블로그(분야별 메이트와 같은 인원)를 한 번에 수집
-python crawler.py --collector 이름 --topics 1,2,3,4 --general match --workers 5 --out-dir out3
+python crawler.py --collector 이름 --topics 1,2,3,4 --general match --workers 8 --out-dir out3
 
 # 월말 인용수 스냅샷 (약 8분)
 python snapshot.py --workers 5

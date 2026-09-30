@@ -13,7 +13,7 @@
 **핵심은 ④와 ⑤를 나눈 거예요.** 글 목록 API는 30편씩 주면서 **좋아요·댓글 수까지 같이** 줘요. 그래서 목록을 먼저 전부 훑어 순위를 매긴 다음, 본문은 뽑힌 글만 받아요.
 
 ```bash
-python crawler.py --collector 이름 --topics 7,8,9,10,11,12,19,20 --general 50 --workers 5 --out-dir out3
+python crawler.py --collector 이름 --topics 7,8,9,10,11,12,19,20 --general match --workers 8 --out-dir out3
 # 이미 받아둔 본문이 있으면: --reuse-posts out2/posts_이름.csv
 ```
 

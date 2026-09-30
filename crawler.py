@@ -14,7 +14,7 @@
 
     # 2) 본 수집 — 메이트 + 스페셜 + 일반 블로그(분야별 메이트와 같은 인원)
     python crawler.py --collector 소연 --topics 7,8,9,10,11,12,19,20 \
-        --with-special --general match --workers 5 --out-dir out3
+        --with-special --general match --workers 8 --out-dir out3
 
     # 3) blogId 목록 파일로 크롤링 (한 줄에 blogId 하나)
     python crawler.py --collector 소연 --blogs blog_list_소연.txt
