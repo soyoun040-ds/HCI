@@ -143,10 +143,14 @@ BLOG_COLS = [
     "is_official_blog",                 # 기업·기관 공식 블로그 (분석 때 빼고 싶을 수 있음)
 ]
 
-POSTMETA_COLS = [                       # 전체 글 메타데이터 (본문 없음)
-    "blog_id", "log_no", "post_date", "post_datetime",
+POSTMETA_COLS = [                       # 7/31 이전 전체 글의 메타데이터 (본문 없음)
+    "blog_id", "log_no", "title",       # 제목: 카테고리 이름만으로는 주제를 알 수 없어서 필요
+    "post_date", "post_datetime",
     "like_count", "comment_count", "share_count",
-    "category_name", "buy_with_own_money", "sample_set",
+    "category_name", "category_no",     # 카테고리는 블로거가 직접 지은 이름이다
+    "buy_with_own_money", "market_post",
+    "thumbnail_count",                  # 표본 밖 글의 이미지 수 근사치
+    "sample_set",
 ]
 
 POST_COLS = [
@@ -402,10 +406,13 @@ def parse_item(it):
         "title": (it.get("titleWithInspectMessage") or "").strip(),
         "post_dt": d,
         "category_name": it.get("categoryName", ""),
+        "category_no": it.get("categoryNo", ""),
         "like_count": it.get("sympathyCnt") or 0,
         "comment_count": it.get("commentCnt") or 0,
         "share_count": it.get("shareCnt") or 0,
         "buy_with_own_money": bool(it.get("buyWithMyOwnMoney")),
+        "market_post": bool(it.get("marketPost")),
+        "thumbnail_count": it.get("thumbnailCount") or 0,
     }
 
 
@@ -597,12 +604,14 @@ def crawl_blog(c, blog_id, mate, collector, have=frozenset()):
     sample = pick_samples(posts)                    # {log_no: "recent_top|random"}
 
     meta_rows = [{
-        "blog_id": blog_id, "log_no": p["log_no"],
+        "blog_id": blog_id, "log_no": p["log_no"], "title": p["title"],
         "post_date": p["post_dt"].strftime("%Y-%m-%d"),
         "post_datetime": p["post_dt"].strftime("%Y-%m-%d %H:%M"),
         "like_count": p["like_count"], "comment_count": p["comment_count"],
-        "share_count": p["share_count"], "category_name": p["category_name"],
+        "share_count": p["share_count"],
+        "category_name": p["category_name"], "category_no": p["category_no"],
         "buy_with_own_money": p["buy_with_own_money"],
+        "market_post": p["market_post"], "thumbnail_count": p["thumbnail_count"],
         "sample_set": sample.get(p["log_no"], ""),
     } for p in posts]
 
